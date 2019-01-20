@@ -26,6 +26,13 @@ module Contracts (T : Theo.Sigs.Theory) : Sigs.ContractEnv with module Theory = 
         expired_uids = IntSet.empty () ;
     }
 
+    let clone (self : t) : t = {
+        self with
+        defs = Hashtbl.copy self.defs ;
+        live = Hashtbl.copy self.live ;
+        expired_uids = IntSet.clone self.expired_uids ;
+    }
+
     let add (contract : Contract.t) (self : t) : unit =
         if Hashtbl.mem self.defs contract.name then (
             asprintf "trying to register two contracts named `%s`" contract.Contract.name
@@ -122,16 +129,26 @@ module Contracts (T : Theo.Sigs.Theory) : Sigs.ContractEnv with module Theory = 
         let fmt (fmt : formatter) (self : operation) : unit =
             Theory.fmt_operation self.uid fmt self.operation
 
+        let uid (self : operation) : int = self.uid
+
         let op (env : t) (self : operation) : Theory.operation =
             let is_new = IntSet.add self.uid env.expired_uids in
             if is_new then (
                 self.operation
             ) else (
-                Exc.Failure (
-                    asprintf "cannot run the exact same operation twice: %a"
-                        (Theory.fmt_operation self.uid) self.operation
-                ) |> raise
+                asprintf "cannot run the exact same operation twice: %a"
+                    (Theory.fmt_operation self.uid) self.operation
+                |> Exc.Throw.tezos
             )
+
+        let must_fail
+            (env : t)
+            (expected : Theory.value option)
+            (self : operation)
+            : Theory.value
+        =
+            let must_fail_uid = get_uid env in
+            Theory.Of.Operation.must_fail must_fail_uid expected (self.operation, self.uid)
 
         let mk (uid : int) (operation : Theory.operation) : operation =
             { operation ; uid }

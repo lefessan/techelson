@@ -33,6 +33,12 @@ module type ContractEnv = sig
     *)
     type operation
 
+    (** Clones an environment.
+    
+        This is useful when an operation can fail: it acts as a backtracking mechanism.
+    *)
+    val clone : t -> t
+
     (** Functions over operations. *)
     module Op : sig
         (** Operation formatter. *)
@@ -44,6 +50,20 @@ module type ContractEnv = sig
             it will fail if the uid of the operation is expired.
         *)
         val op : t -> operation -> Theory.operation
+
+        (** MustFail version of an operation.
+
+            The operation is not considered processed: does not invalid the uid of the operation.
+            This is used when wrapping an operation into a `MustFail`.
+        *)
+        val must_fail :
+            t ->
+            Theory.value option ->
+            operation ->
+            Theory.value
+
+        (** The unique identifier of the operation. *)
+        val uid : operation -> int
 
         (** Constructor. *)
         val mk : int -> Theory.operation -> operation
@@ -139,6 +159,12 @@ module type StackBase = sig
     (** Pops something from the stack. *)
     val pop : t -> Theory.value * Dtyp.t
 
+    (** Clears the stack completely.
+    
+        Used when running into errors.
+    *)
+    val clear : t -> unit
+
     (** Map over the last element on the stack. *)
     val map_last : (Theory.value -> Dtyp.t -> Theory.value) -> t -> unit
 
@@ -194,6 +220,9 @@ module type Stack = sig
 
     (** Pops a pair. *)
     val pop_pair : t -> (Theory.value * Dtyp.t) * (Theory.value * Dtyp.t)
+
+    (** Pops an operation. *)
+    val pop_operation : t -> Env.operation * Dtyp.t
 
     (** Pops a list of operation. *)
     val pop_operation_list : t -> Env.operation list * Dtyp.t

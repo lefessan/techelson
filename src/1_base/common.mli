@@ -37,6 +37,12 @@ module Either : sig
     (** Formatter. *)
     val fmt : (formatter -> 'l -> unit) -> (formatter -> 'r -> unit) -> formatter -> ('l, 'r) t -> unit
 
+    (** Map over the left part of a disjunction. *)
+    val map_lft : ('l -> 'lft) -> ('l, 'r) t -> ('lft, 'r) t
+
+    (** Map over the right part of a disjunction. *)
+    val map_rgt : ('r -> 'rgt) -> ('l, 'r) t -> ('l, 'rgt) t
+
     (** Transparent formatter. *)
     val fmt_through : (formatter -> 'l -> unit) -> (formatter -> 'r -> unit) -> formatter -> ('l, 'r) t -> unit
 end
@@ -125,6 +131,9 @@ module IntSet : sig
     (** Creates an empty set. *)
     val empty : unit -> t
 
+    (** Clones a set. *)
+    val clone : t -> t
+
     (** Adds an element to the set.
 
         Returns true if the element was not there (`is_new`).
@@ -166,6 +175,12 @@ val set_conf : Conf.t -> unit
 
 (** Configuration, built by CLAP. *)
 val conf : unit -> Conf.t
+
+(** Catches an exception. *)
+val catch_exn : (unit -> 'a) -> ('a, exn) Either.t
+
+(** Catches protocol errors. *)
+val catch_protocol_exn : (unit -> 'a) -> ('a, Exc.Protocol.t) Either.t
 
 (** Logs something at some log level.
 

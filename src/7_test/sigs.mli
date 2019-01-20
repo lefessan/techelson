@@ -76,7 +76,7 @@ module type TestCxt = sig
     (** Contains all the operations related to `run_test` *)
     module Test : sig
         (** Runs a test until it's over or some operations need to be applied.
-        
+
             Returns `None` iff the test is over. *)
         val run : run_test -> apply_ops option
 
@@ -87,7 +87,7 @@ module type TestCxt = sig
         val contract_env : run_test -> Env.t
 
         (** Concise `run_test` formatter.
-        
+
             This formatter only outputs live contracts. For a more verbose output, use the
             accessors.
         *)
@@ -96,8 +96,8 @@ module type TestCxt = sig
 
     (** Contains the operations related to `apply_ops`. *)
     module Ops : sig
-        (** Applies operations until a transfer is reached or we run out of operations. *)
-        val apply : apply_ops -> (run_test, transfer) Either.t
+        (** Applies the next operation. *)
+        val apply : apply_ops -> (run_test, transfer) Either.t option
 
         (** Operations awaiting treatment. *)
         val operations : apply_ops -> Env.operation list
@@ -105,8 +105,11 @@ module type TestCxt = sig
         (** The contract environment. *)
         val contract_env : apply_ops -> Env.t
 
+        (** The next operation to apply. *)
+        val next_op : apply_ops -> Env.operation option
+
         (** Concise `run_test` formatter.
-        
+
             This formatter only outputs live contracts and pending operations. For a more verbose
             output, use the accessors.
         *)

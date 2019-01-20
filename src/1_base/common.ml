@@ -37,6 +37,16 @@ module Either = struct
     let lft (lft : 'l) : ('l, 'r) t = Lft lft
     let rgt (rgt : 'r) : ('l, 'r) t = Rgt rgt
 
+    let map_lft (f : 'l -> 'lft) (self : ('l, 'r) t) : ('lft, 'r) t =
+        match self with
+        | Lft lft -> Lft (f lft)
+        | Rgt rgt -> Rgt rgt
+
+    let map_rgt (f : 'r -> 'rgt) (self : ('l, 'r) t) : ('l, 'rgt) t =
+        match self with
+        | Lft lft -> Lft lft
+        | Rgt rgt -> Rgt (f rgt)
+
     let fmt
         (fmt_l : formatter -> 'l -> unit)
         (fmt_r : formatter -> 'r -> unit)
@@ -129,6 +139,7 @@ end
 module IntSet = struct
     type t = (int, unit) Hashtbl.t
     let empty () : t = Hashtbl.create ~random:false 101
+    let clone : t -> t = Hashtbl.copy
     let add (elm : int) (set : t) : bool =
         if Hashtbl.mem set elm then false else (
             Hashtbl.add set elm ();
@@ -190,3 +201,15 @@ let log_1 (args : ('a, Format.formatter, unit) format) : 'a = log 1 args
 let log_2 (args : ('a, Format.formatter, unit) format) : 'a = log 2 args
 let log_3 (args : ('a, Format.formatter, unit) format) : 'a = log 3 args
 let log_4 (args : ('a, Format.formatter, unit) format) : 'a = log 4 args
+
+let catch_exn (f : unit -> 'a) : ('a, exn) Either.t =
+    try f () |> Either.lft with
+    | e -> Either.Rgt e
+
+let catch_protocol_exn (f : unit -> 'a) : ('a, Exc.Protocol.t) Either.t =
+    try f () |> Either.lft with
+    | Exc.Exc (Exc.Protocol p) -> Either.rgt p
+    | e ->
+        log_0 "@.@.%s@.@." (Printexc.to_string e);
+        raise e
+  
