@@ -51,7 +51,11 @@ let parse
 
         | "option" ->
             typ_arity 1;
-            Dtyp.Option (no_annot dtyps |> List.hd)
+            let sub : Dtyp.named =
+                let dtyp = List.hd dtyps in
+                { inner = fst dtyp ; name = snd dtyp }
+            in
+            Dtyp.Option sub
 
         | "set" ->
             typ_arity 1;
@@ -97,6 +101,12 @@ let parse
             let keys, vals = List.hd dtyps, List.tl dtyps |> List.hd in
             Dtyp.BigMap (keys, vals)
 
+        | "lambda" ->
+            typ_arity 2;
+            let dtyps = no_annot dtyps in
+            let dom, codom = List.hd dtyps, List.tl dtyps |> List.hd in
+            Dtyp.Lambda (dom, codom)
+
         | _ -> (
             match Dtyp.leaf_of_string token with
             | None -> sprintf "unknown type constructor `%s`" token |> Exc.throw
@@ -116,8 +126,10 @@ let parse
                             (
                                 fun fmtt (dtyp, annot) ->
                                 match annot with
-                                | None -> Dtyp.fmt fmtt dtyp
-                                | Some annot -> fprintf fmtt "(%a %a)" Dtyp.fmt dtyp Annot.Field.fmt annot
+                                | None ->
+                                    Dtyp.fmt fmtt dtyp
+                                | Some annot ->
+                                    fprintf fmtt "(%a %a)" Dtyp.fmt dtyp Annot.Field.fmt annot
                             )
                         )
                         dtyps

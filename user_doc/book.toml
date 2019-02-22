@@ -1,0 +1,11 @@
+[book]
+authors = ["AdrienChampion"]
+multilingual = false
+src = "src"
+title = "Techelson User Documentation"
+
+[output.html]
+
+[output.linkcheck]
+follow-web-links = true
+traverse-parent-directories = true

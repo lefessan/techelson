@@ -33,6 +33,7 @@ module Macro = struct
     | Cmp of op
     | If of (op * 'ins * 'ins)
     | IfCmp of (op * 'ins * 'ins)
+    | IfSome of 'ins * 'ins
     | Int
     | Fail
     | Assert
@@ -47,7 +48,6 @@ module Macro = struct
     | P of pair_op list
     | Unp of pair_op list
     | CadR of unpair_op list
-    | IfSome of 'ins * 'ins
     | SetCadr of unpair_op list
     | MapCadr of unpair_op list * 'ins
 
@@ -154,8 +154,8 @@ type leaf =
 | StepsToQuota
 | Now
 | Pack
-| Unpack
 | Slice
+| Address
 | Hash of hash_fun
 | CheckSignature
 | Rename
@@ -208,8 +208,8 @@ let fmt_leaf (fmt : formatter) (leaf : leaf) : unit = match leaf with
 | StepsToQuota -> fprintf fmt "STEPS_TO_QUOTA"
 | Now -> fprintf fmt "NOW"
 | Pack -> fprintf fmt "PACK"
-| Unpack -> fprintf fmt "UNPACK"
 | Slice -> fprintf fmt "SLICE"
+| Address -> fprintf fmt "ADDRESS"
 | Hash h -> fmt_hash_fun fmt h
 | CheckSignature -> fprintf fmt "CHECK_SIGNATURE"
 | Rename -> fprintf fmt "RENAME"
@@ -262,7 +262,6 @@ let leaf_of_string (token : string) : leaf option = match token with
 | "STEPS_TO_QUOTA" -> Some StepsToQuota
 | "NOW" -> Some Now
 | "PACK" -> Some Pack
-| "UNPACK" -> Some Unpack
 | "SLICE" -> Some Slice
 | "HASH_KEY" -> Some (Hash B58Check)
 | "BLAKE2B" -> Some (Hash Blake2B)
@@ -282,7 +281,8 @@ let annot_arity_of_leaf (leaf : leaf) : (int * int * int) = match leaf with
 | Car
 | Cdr
 | Cons
-| Som -> (0, 1, 1)
+| Som
+| Address -> (0, 1, 1)
 
 (* One variable annotation, two field annotations. *)
 | Pair -> (0, 1, 2)
@@ -326,7 +326,6 @@ let annot_arity_of_leaf (leaf : leaf) : (int * int * int) = match leaf with
 | StepsToQuota
 | Now
 | Pack
-| Unpack
 | Slice
 | Hash _
 | CreateAccount
@@ -334,30 +333,21 @@ let annot_arity_of_leaf (leaf : leaf) : (int * int * int) = match leaf with
 | Rename -> (0, 1, 0)
 
 type extension =
-| StorageOf of Dtyp.t
-| BalanceOf
+| GetStorage of Dtyp.t
+| GetBalance
 | ApplyOps
 | PrintStack
-| MustFail
+| MustFail of Dtyp.t
+| Step of string option
+| SetSource of t
+| SpawnContract of Dtyp.t
 
-let fmt_extension
-    ?annots:(annots = fun (_ : formatter) () -> ())
-    (fmt : formatter)
-    (e : extension)
-    : unit
-=
-    match e with
-    | StorageOf dtyp -> fprintf fmt "STORAGE_OF%a %a" annots () Dtyp.fmt dtyp
-    | BalanceOf -> fprintf fmt "BALANCE_OF"
-    | ApplyOps -> fprintf fmt "APPLY_OPERATIONS"
-    | PrintStack -> fprintf fmt  "PRINT_STACK"
-    | MustFail -> fprintf fmt "MUST_FAIL"
-
-type 'sub ins =
+and 'sub ins =
 | Leaf of leaf
 | Cast of Dtyp.t
 | EmptySet of Dtyp.t
 | EmptyMap of Dtyp.t * Dtyp.t
+| Unpack of Dtyp.t
 | Non of Dtyp.t
 | Left of Dtyp.t
 | Right of Dtyp.t
@@ -371,6 +361,7 @@ type 'sub ins =
 | Push of Dtyp.t * const
 | Lambda of Dtyp.t * Dtyp.t * 'sub
 | Iter of 'sub
+| Map of Dtyp.t * 'sub
 | IfNone of 'sub * 'sub
 | IfLeft of 'sub * 'sub
 | IfRight of 'sub * 'sub
@@ -380,7 +371,7 @@ type 'sub ins =
 | Extension of extension
 
 and const =
-| Unit
+| U
 
 | Bool of bool
 | Int of string
@@ -395,6 +386,9 @@ and const =
 | No
 | So of const
 
+| Pr of const * const
+| Lst of const list
+
 and contract = {
     storage : Dtyp.t ;
     param : Dtyp.t ;
@@ -406,6 +400,7 @@ and t = {
     typs : Annot.typs ;
     vars : Annot.vars ;
     fields : Annot.fields ;
+    comments : string list ;
 }
 
 let mk_str_const (s : string) : const =
@@ -425,30 +420,47 @@ let mk_str_const (s : string) : const =
         )
     )
 
+let nu_mk ?annot:(annot=None) ?comments:(comments=[]) (ins : t ins) : t =
+    let vars, fields, typs =
+        match annot with
+        | None -> [], [], []
+        | Some annot -> annot.Annot.vars, annot.Annot.fields, annot.Annot.typs
+    in
+    { vars ; fields ; typs ; ins ; comments }
+
 let mk
     ?vars:(vars=[])
     ?fields:(fields=[])
     ?typs:(typs=[])
+    ?comments:(comments=[])
     (ins : t ins)
     : t
-= { ins ; vars ; fields ; typs }
+= { ins ; vars ; fields ; typs ; comments }
 
 let mk_contract ~(storage : Dtyp.t) ~(param : Dtyp.t) (entry : t) : contract =
     { storage ; param ; entry }
 
 let invisible_get_one (desc : string) (l : 'a list) : 'a =
     if l = [] then (
-        sprintf "no \"%s\" field found" desc |> Exc.throw
+        sprintf "no `%s` field found" desc |> Exc.throw
     ) else if List.length l > 1 then (
-        sprintf "more than one \"%s\" field found" desc |> Exc.throw
+        sprintf "more than one `%s` field found" desc |> Exc.throw
     );
     List.hd l
-let mk_contract_of_lists ~(storage : Dtyp.t list) ~(param : Dtyp.t list) (entry : t list) : contract =
+let mk_contract_of_lists
+    ~(storage : Dtyp.t list)
+    ~(param : Dtyp.t list)
+    (entry : t list)
+    : contract
+=
     {
         storage = invisible_get_one "storage type" storage ;
         param = invisible_get_one "entry parameter" param ;
         entry = invisible_get_one "entry code" entry
     }
+
+let nu_mk_leaf ?annot:(annot=None) ?comments:(comments=[]) (leaf : leaf) : t =
+    Leaf leaf |> nu_mk ~annot ~comments
 
 let mk_leaf
     ?vars:(vars=[])
@@ -462,6 +474,18 @@ let mk_seq (seq : t list) : t =
     match seq with
     | [ins] -> ins
     | _ -> Seq seq |> mk
+
+let unit_contract : contract =
+    let dtyp = Dtyp.mk_leaf Dtyp.Unit in
+    let entry =
+        mk_seq [
+            Drop |> mk_leaf ;
+            Unit |> mk_leaf ;
+            Nil (Dtyp.mk_leaf Dtyp.Operation) |> mk ;
+            Pair |> mk_leaf ;
+        ]
+    in
+    mk_contract ~storage:(dtyp) ~param:(dtyp) entry
 
 (* Formats an IF-like instruction. *)
 let fmt_if_like
@@ -484,25 +508,52 @@ let needs_parens (t : t) : bool =
     | Seq _ -> false
     | _ -> true
 
+let rec fmt_extension
+    ?annots:(annots = fun (_ : formatter) () -> ())
+    (fmtt : formatter)
+    (e : extension)
+    : unit
+=
+    match e with
+    | GetStorage dtyp -> fprintf fmtt "GET_STORAGE%a %a" annots () Dtyp.fmt dtyp
+    | GetBalance -> fprintf fmtt "GET_BALANCE%a" annots ()
+    | ApplyOps -> fprintf fmtt "APPLY_OPERATIONS%a" annots ()
+    | PrintStack -> fprintf fmtt  "PRINT_STACK%a" annots ()
+    | MustFail dtyp -> fprintf fmtt "MUST_FAIL%a %a" annots () Dtyp.fmt dtyp
+    | Step opt -> unwrap_or "<none>" opt |> fprintf fmtt "STEP %s"
+    | SetSource code -> fprintf fmtt "SET_SOURCE%a %a" annots () fmt code
+    | SpawnContract dtyp -> fprintf fmtt "SPAWN_CONTRACT%a %a" annots () Dtyp.fmt dtyp
+
 (* Formats contracts. *)
-let rec fmt_contract (fmtt : formatter) ({ storage ; param ; entry } : contract) : unit =
+and fmt_contract (fmtt : formatter) ({ storage ; param ; entry } : contract) : unit =
     fprintf
-        fmtt "@[@[<v 4>{@ storage %a ;@ parameter %a ;@ code @[%a@]@]@,}@]"
+        fmtt "@[@[<v 4>{@ storage %a ;@ parameter %a ;@ code @[%a@] ;@]@,}@]"
         Dtyp.fmt storage Dtyp.fmt param fmt entry
 
-(* Formats constants. *)
+(*  Formats constants.
+
+    # TODO
+
+    - stackless
+*)
 and fmt_const (fmtt : formatter) (c : const) : unit =
     match c with
-    | Unit -> fprintf fmtt "Unit"
+    | U -> fprintf fmtt "Unit"
     | Bool b -> fprintf fmtt (if b then "True" else "False")
     | Int n -> fprintf fmtt "%s" n
-    | Str s -> fprintf fmtt "\"%s\"" s
+    | Str s -> fprintf fmtt "%S" s
     | Bytes s -> fprintf fmtt "0x%s" s
     | Cont c -> fmt_contract fmtt c
     | Lft c -> fprintf fmtt "(Left %a)" fmt_const c
     | Rgt c -> fprintf fmtt "(Right %a)" fmt_const c
     | No -> fprintf fmtt "None"
     | So c -> fprintf fmtt "(Some %a)" fmt_const c
+    | Pr (fst, snd) -> fprintf fmtt "(Pair %a %a)" fmt_const fst fmt_const snd
+    | Lst l -> (
+        fprintf fmtt "{";
+        l |> List.iter (fprintf fmtt " %a ;" fmt_const);
+        fprintf fmtt "}"
+    )
 
 (* Formats instructions.
 
@@ -530,7 +581,14 @@ and fmt (fmtt : formatter) (t : t) : unit =
                 ) else tail
             in
 
-            let { ins = to_do ; vars ; fields ; typs } = to_do in
+            let { ins = to_do ; vars ; fields ; typs ; comments } = to_do in
+            let _ =
+                fprintf fmtt "@[<v>";
+                comments |> List.iter (
+                    fprintf fmtt "# %s@,"
+                );
+                fprintf fmtt "@]"
+            in
             let fmt_annots fmtt () : unit =
                 Annot.fmt_typs fmtt typs;
                 Annot.fmt_vars fmtt vars;
@@ -538,6 +596,7 @@ and fmt (fmtt : formatter) (t : t) : unit =
             in
             let tail =
                 match to_do with
+
                 | Cast dtyp ->
                     fprintf fmtt "CAST%a %a" fmt_annots () Dtyp.fmt dtyp;
                     tail
@@ -546,6 +605,9 @@ and fmt (fmtt : formatter) (t : t) : unit =
                     tail
                 | EmptyMap (k, v) ->
                     fprintf fmtt "EMPTY_MAP%a %a %a" fmt_annots () Dtyp.fmt k Dtyp.fmt v;
+                    tail
+                | Unpack dtyp ->
+                    fprintf fmtt "UNPACK%a %a" fmt_annots () Dtyp.fmt dtyp;
                     tail
                 | Non dtyp ->
                     fprintf fmtt "NONE%a %a" fmt_annots () Dtyp.fmt dtyp;
@@ -621,6 +683,11 @@ and fmt (fmtt : formatter) (t : t) : unit =
                     fprintf fmtt "ITER ";
                     ([ignore, t, true], ignore) :: tail
 
+                | Map (_, t) ->
+                    assert (vars = []);
+                    fprintf fmtt "MAP ";
+                    ([ignore, t, true], ignore) :: tail
+
                 | Push (dtyp, c) ->
                     fprintf
                         fmtt "PUSH%a @[<hov>@[%a@]@ %a@]"
@@ -649,7 +716,7 @@ and fmt (fmtt : formatter) (t : t) : unit =
                             [ignore, c.entry, true], fun () -> fprintf fmtt ";@]@,}@]"
                         ) :: tail
                     | Either.Rgt name ->
-                        fprintf fmtt " %s@]@]" name;
+                        fprintf fmtt " \"%s\"@]@]" name;
                         tail
                 )
 
@@ -683,3 +750,6 @@ and fmt (fmtt : formatter) (t : t) : unit =
 
 let typ_of_contract ?alias:(alias = None) (c : contract) : Dtyp.t =
     Dtyp.Contract c.param |> Dtyp.mk ~alias
+
+let comments (blah : string list) (self : t) : t =
+    { self with comments = self.comments @ blah }

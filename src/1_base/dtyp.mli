@@ -2,6 +2,15 @@
 
 open Common
 
+(** Type of type variables. *)
+type tvar = int
+
+(** Formats type variables. *)
+val fmt_tvar : formatter -> tvar -> unit
+
+(** Generates a fresh type variable. *)
+val fresh_tvar : unit -> tvar
+
 (** Nullary datatypes. *)
 type leaf =
 | Str
@@ -17,6 +26,7 @@ type leaf =
 | KeyH
 | Signature
 | Timestamp
+| Var of tvar
 
 (** Formatter for nullary datatypes. *)
 val fmt_leaf : formatter -> leaf -> unit
@@ -39,17 +49,19 @@ type named = {
 and dtyp =
 | Leaf of leaf
 
+| Pair of named * named
+| Or of named * named
+| Option of named
+
 | List of t
-| Option of t
 | Set of t
 | Contract of t
 
-| Pair of named * named
-| Or of named * named
 | Map of t * t
 | BigMap of t * t
+| Lambda of t * t
 
-(** Datatypes. *)
+(** Datatype with an alias. *)
 and t = {
     typ : dtyp ;
     (** Actual datatype. *)
@@ -66,8 +78,17 @@ val mk_named : Annot.Field.t option -> t -> named
 (** Named datatype constructor from a leaf. *)
 val mk_leaf : ?alias : alias -> leaf -> t
 
+(** Creates a fresh type variable. *)
+val mk_var : ?alias : alias -> unit -> t
+
+(** True if the type is comparable. *)
+val is_comparable : t -> bool
+
 (** Renames a datatype. *)
 val rename : alias -> t -> t
+
+(** Renames a datatype if the alias is `Some`. *)
+val rename_if_some : alias -> t -> t
 
 (** Formatter for datatypes. *)
 val fmt : formatter -> t -> unit
@@ -97,7 +118,16 @@ module Inspect : sig
 
     (** Retrieves the two type parameters of a pair. *)
     val pair : t -> t * t
-end
 
-(** Checks that two types are compatible. *)
-val check : t -> t -> unit
+    (** Retrieves the type parameter of a set. *)
+    val set : t -> t
+
+    (** Retrieves the two type parameters of a map or a bigmap. *)
+    val map : t -> t * t
+
+    (** Retrieves the type of the elements taken by an iterator over some collection. *)
+    val iter_elm : t -> t
+
+    (** Retrieves the two type parameters of a lambda. *)
+    val lambda : t -> t * t
+end

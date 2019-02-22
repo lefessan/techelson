@@ -6,5 +6,7 @@
     (libraries
         base
         parse
+        zarith
+        ptime
     )
 )

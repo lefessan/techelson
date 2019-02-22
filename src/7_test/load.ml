@@ -15,10 +15,61 @@ let of_source (src : Source.t list) : in_channel list * error_count =
     ) ([], 0) src
 
 let contract (name : string) (source : Source.t) (chan : in_channel) : Contract.t =
-    (Lexing.from_channel chan |> Parse.Micparse.just_contract Parse.Miclex.token) name source
+    let lexbuf = Lexing.from_channel chan in
+    try Parse.Micparse.just_contract Parse.Miclex.token lexbuf name source
+    with e -> (
+        let line = lexbuf.Lexing.lex_curr_p.Lexing.pos_lnum in
+        let token = Lexing.lexeme lexbuf in
+        (fun () -> raise e)
+        |> Exc.chain_err (fun () -> sprintf "on token `%s`, line %i" token line)
+    )
 
 let test (name : string) (source : Source.t) (chan : in_channel) : Testcase.t =
-    let code = (Lexing.from_channel chan |> Parse.Micparse.just_mic Parse.Miclex.token) in
+    let lexbuf = Lexing.from_channel chan in
+    let parse_res =
+        try Parse.Micparse.mic_or_contract Parse.Miclex.token lexbuf
+        with e -> (
+            let line = lexbuf.Lexing.lex_curr_p.Lexing.pos_lnum in
+            let token = Lexing.lexeme lexbuf in
+            (fun () -> raise e)
+            |> Exc.chain_err (fun () -> sprintf "on token `%s`, line %i" token line)
+        )
+    in
+    let code =
+        match parse_res with
+        | Either.Lft code -> code
+        | Either.Rgt contract -> (
+            let contract = contract name source in
+            let unit = Dtyp.unit in
+            let unit_named = Dtyp.mk_named None unit in
+            let env = DtypCheck.empty () in
+            let code = contract.entry in
+            if DtypCheck.is_compatible env unit contract.entry_param |> not then (
+                Exc.throws [
+                    asprintf "contract parameter must have type unit, found %a"
+                        Dtyp.fmt contract.entry_param ;
+                    "while parsing a contract as a testcase" ;
+                ]
+            );
+            if DtypCheck.is_compatible env unit contract.storage |> not then (
+                Exc.throws [
+                    asprintf "contract storage must have type unit, found %a"
+                        Dtyp.fmt contract.storage ;
+                    "while parsing a contract as a testcase" ;
+                ]
+            );
+            let code =
+                Mic.Seq [
+                    Mic.Push (
+                        Dtyp.Pair (unit_named, unit_named) |> Dtyp.mk,
+                        Mic.Pr (Mic.U, Mic.U)
+                    ) |> Mic.mk ;
+                    code
+                ] |> Mic.mk
+            in
+            code
+        )
+    in
     Testcase.mk name source code
 
 let load_map
@@ -64,19 +115,18 @@ let tests (files : string list) : Testcase.t list * error_count =
             let src = Source.File file in
             test name src chan
     )
-
+(* 
 let scenario
     (src : Source.t)
     (chan : in_channel)
     : Contract.t list * Testcase.t list
 =
     let everything = (Lexing.from_channel chan |> Parse.Micparse.scenario Parse.Miclex.token) in
-    everything src
+    everything src *)
 
 let context
     ~(contract_files : Conf.contract list)
     ~(test_files : string list)
-    ~(else_chan : (in_channel * Source.t) option)
     : Testcases.t * error_count
 =
     let contract_count = List.length contract_files in
@@ -99,16 +149,6 @@ let context
         );
         log_0 "@."
     );
-
-    let contracts, tests =
-        if test_files <> [] then contracts, tests else (
-            match else_chan with
-            | Some (chan, src) ->
-                let nu_contracts, nu_tests = scenario src chan in
-                contracts @ nu_contracts, tests @ nu_tests
-            | None -> contracts, tests
-        )
-    in
 
     let cxt = Testcases.of_raw contracts tests in
 

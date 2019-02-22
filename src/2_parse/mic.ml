@@ -163,16 +163,16 @@ let rec parse
         )
 
         (* Extensions. *)
-        | "STORAGE_OF" -> (
+        | "GET_STORAGE" -> (
             param_arity_check 1 0;
             annot_arity_check 0 1 0;
             let dtyp = List.hd dtyps in
-            Extension (StorageOf dtyp)
+            Extension (GetStorage dtyp)
         )
-        | "BALANCE_OF" ->
+        | "GET_BALANCE" ->
             param_arity_check 0 0;
             annot_arity_check 0 1 0;
-            Extension BalanceOf
+            Extension GetBalance
         | "APPLY_OPERATIONS" ->
             param_arity_check 0 0;
             annot_arity_check 0 0 0;
@@ -182,9 +182,10 @@ let rec parse
             annot_arity_check 0 0 0;
             Extension PrintStack
         | "MUST_FAIL" ->
-            param_arity_check 0 0;
-            annot_arity_check 0 0 0;
-            Extension MustFail
+            param_arity_check 1 0;
+            annot_arity_check 0 1 0;
+            let dtyp = List.hd dtyps in
+            Extension (MustFail dtyp)
 
         | _ -> (
             let args = args_to_mic args in
@@ -419,7 +420,8 @@ and parse_macro_diup
 =
     let bail () : int =
         [
-            sprintf "token `%s` looks like a %s%c+%c-like macro, but is not" token pref rep finish ;
+            sprintf "token `%s` looks like a %s%c+%c-like macro, but is not"
+                token pref rep finish ;
             sprintf "please refer to \
                 https://tezos.gitlab.io/master/whitedoc/michelson.html#syntactic-conveniences" ;
         ] |> Exc.throws
@@ -695,3 +697,42 @@ and parse_macro
         )
     in
     loop all
+
+
+
+let macro (annot : Annot.t) (macro : Mic.t Mic.Macro.t) : Mic.t =
+    let expanded =
+        match macro with
+        | Int -> Expand.macro_int
+        | Fail -> Expand.macro_fail
+        | Assert -> Expand.macro_assert
+        | AssertNone -> Expand.macro_assert_none
+        | AssertSome -> Expand.macro_assert_some
+        | AssertLeft -> Expand.macro_assert_left
+        | AssertRight -> Expand.macro_assert_right
+        | Cmp op -> Expand.macro_cmp annot.vars op
+        | If (op, code_1, code_2) -> Expand.macro_if op code_1 code_2
+        | IfCmp (op, code_1, code_2) -> Expand.macro_if_cmp op code_1 code_2
+        | IfSome (code_1, code_2) -> Expand.macro_if_some code_1 code_2
+        | Assert_ op -> Expand.macro_assert_ op
+        | AssertCmp op -> Expand.macro_assert_cmp op
+        | P ops -> Expand.macro_pair annot.vars annot.fields ops
+        | Unp ops -> Expand.macro_unpair annot.vars ops
+        | CadR ops -> Expand.macro_cadr annot.vars annot.fields ops
+        | SetCadr ops -> Expand.macro_set_cadr annot.vars annot.fields ops
+        | MapCadr (ops, code) -> Expand.macro_map_cadr annot.vars annot.fields ops code
+        | Mic.Macro.Dup count -> (
+            if count <= 0 then (
+                Exc.throw "unreachable: trying to create a `DU[U]+P` with less than one `U`"
+            );
+            Expand.macro_dup annot.vars count
+        )
+        | Mic.Macro.Dip (count, code) -> (
+            if count <= 0 then (
+                Exc.throw "unreachable: trying to create a `DI[I]+P` with less than one `I`"
+            );
+            Expand.macro_dip count code
+            
+        )
+    in
+    Mic.Macro (expanded, macro) |> Mic.mk

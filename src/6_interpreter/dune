@@ -1,0 +1,11 @@
+(library
+    (name interpreter)
+    (public_name techelson.interpreter)
+    (synopsis "Constructs evaluators.")
+    (modules_without_implementation sigs)
+    (libraries
+        base
+        theo
+        stack
+    )
+)

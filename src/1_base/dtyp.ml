@@ -2,6 +2,17 @@
 
 open Common
 
+type tvar = int
+
+let fmt_tvar (fmt : formatter) (self : tvar) : unit =
+    fprintf fmt "'t_%i" self
+
+let tvar_counter : int ref = ref 0
+let fresh_tvar () : tvar =
+    let res = !tvar_counter in
+    tvar_counter := 1 + !tvar_counter;
+    res
+
 type leaf =
 | Str
 | Nat
@@ -16,6 +27,7 @@ type leaf =
 | KeyH
 | Signature
 | Timestamp
+| Var of tvar
 
 let fmt_leaf (fmt : formatter) (typ : leaf) = match typ with
 | Str -> fprintf fmt "string"
@@ -31,6 +43,7 @@ let fmt_leaf (fmt : formatter) (typ : leaf) = match typ with
 | KeyH -> fprintf fmt "key_hash"
 | Signature -> fprintf fmt "signature"
 | Timestamp -> fprintf fmt "timestamp"
+| Var v -> fmt_tvar fmt v
 
 let leaf_of_string (s : string) : leaf option = match s with
 | "string" -> Some Str
@@ -58,15 +71,17 @@ type named = {
 and dtyp =
 | Leaf of leaf
 
+| Pair of named * named
+| Or of named * named
+| Option of named
+
 | List of t
-| Option of t
 | Set of t
 | Contract of t
 
-| Pair of named * named
-| Or of named * named
 | Map of t * t
 | BigMap of t * t
+| Lambda of t * t
 
 and t = {
     typ : dtyp ;
@@ -80,22 +95,28 @@ let mk_named (name : Annot.Field.t option) (inner : t) : named =
 
 let mk_leaf ?alias:(alias = None) (leaf : leaf) : t = { typ = Leaf leaf ; alias }
 
+let mk_var ?alias:(alias = None) () : t =
+    Var (fresh_tvar ()) |> mk_leaf ~alias
+
+let is_comparable (dtyp : t) : bool =
+    match dtyp.typ with
+    | Leaf Int | Leaf Nat | Leaf Str | Leaf Bytes | Leaf Mutez | Leaf Bool
+    | Leaf KeyH | Leaf Timestamp -> true
+    | _ -> false
+
 let rename (alias : alias) ({ typ ; _ } : t) : t = { typ ; alias }
+let rename_if_some (nu_alias : alias) ({ typ ; alias } : t) : t =
+    match nu_alias with
+    | None -> { typ ; alias }
+    | Some _ -> { typ ; alias = nu_alias }
 
 let fmt (fmtt : formatter) (typ : t) =
     (* Forms the stack frame for types with annotated subtypes. *)
     let frame_of_named (named : named) : (Fmt.sep * t * Annot.Field.t option * Fmt.sep) =
-        match named.name with
-        | Some name ->
-            (fun () -> fprintf fmtt "@ ("),
-            named.inner,
-            Some name,
-            (fun () -> fprintf fmtt ")")
-        | None ->
-            (fun () -> fprintf fmtt "@ "),
-            named.inner,
-            None,
-            ignore
+        (fun () -> fprintf fmtt "@ "),
+        named.inner,
+        named.name,
+        ignore
     in
 
     (* Loop with a manual stack.
@@ -104,7 +125,9 @@ let fmt (fmtt : formatter) (typ : t) =
         things to print `t` with something to print before `pre` and after `post`. Once everything
         in the list is printed, `close` prints whatever needs to be printed to close the sequence.
     *)
-    let rec loop (stack : ( (Fmt.sep * t * Annot.Field.t option * Fmt.sep) list * Fmt.seq_end) list) : unit =
+    let rec loop (
+        stack : ( (Fmt.sep * t * Annot.Field.t option * Fmt.sep) list * Fmt.seq_end) list
+    ) : unit =
         match stack with
 
         (* Stack is empty, we're done. *)
@@ -138,9 +161,8 @@ let fmt (fmtt : formatter) (typ : t) =
             let stack = match to_do with
                 | Leaf leaf ->
                     let alias_pre, alias_post =
-                        match alias with
-                        | None -> "", ""
-                        | Some _ -> "(", ")"
+                        if alias = None && field = None
+                        then ("", "") else "(", ")"
                     in
                     fprintf fmtt "%s" alias_pre;
                     fmt_leaf fmtt leaf;
@@ -158,9 +180,9 @@ let fmt (fmtt : formatter) (typ : t) =
                     ) :: stack
 
                 | Option sub ->
-                    fprintf fmtt "(option%a%a " fmt_alias () fmt_field field;
+                    fprintf fmtt "(option%a%a" fmt_alias () fmt_field field;
                     (
-                        [(ignore, sub, None, ignore)],
+                        [ frame_of_named sub ],
                         Fmt.unit_combine (Fmt.cls_paren fmtt) post
                     ) :: stack
 
@@ -185,7 +207,7 @@ let fmt (fmtt : formatter) (typ : t) =
                             frame_of_named lft ;
                             frame_of_named rgt
                         ],
-                        (fun () -> fprintf fmtt "@]@,@]" ; post ())
+                        (fun () -> fprintf fmtt "@]@,)@]" ; post ())
                     ) :: stack
 
                 | Pair (lft, rgt) ->
@@ -203,7 +225,7 @@ let fmt (fmtt : formatter) (typ : t) =
 
                     (
                         [ (ignore, k, None, ignore) ; (Fmt.sep_spc fmtt, v, None, ignore) ],
-                        Fmt.unit_combine (Fmt.cls_of fmtt "@]@,)@]") post
+                        Fmt.unit_combine (fun () -> fprintf fmtt "@]@,)@]") post
                     ) :: stack
 
                 | BigMap (k, v) ->
@@ -211,6 +233,14 @@ let fmt (fmtt : formatter) (typ : t) =
 
                     (
                         [ (ignore, k, None, ignore) ; (Fmt.sep_spc fmtt, v, None, ignore) ],
+                        Fmt.unit_combine (fun () -> fprintf fmtt "@]@,)@]") post
+                    ) :: stack
+
+                | Lambda (dom, codom) ->
+                    fprintf fmtt "@[@[<hv 4>(lambda%a%a@ " fmt_alias () fmt_field field;
+
+                    (
+                        [ (ignore, dom, None, ignore) ; (Fmt.sep_spc fmtt, codom, None, ignore) ],
                         Fmt.unit_combine (fun () -> fprintf fmtt "@]@,)@]") post
                     ) :: stack
         in
@@ -229,7 +259,7 @@ module Inspect = struct
 
     let option (dtyp : t) : t =
         match dtyp.typ with
-        | Option sub -> sub
+        | Option sub -> sub.inner
         | _ -> asprintf "expected option type, found %a" fmt dtyp |> Exc.throw
 
     let list (dtyp : t) : t =
@@ -242,54 +272,34 @@ module Inspect = struct
         | Pair (lft, rgt) -> lft.inner, rgt.inner
         | _ -> asprintf "expected pair type, found %a" fmt dtyp |> Exc.throw
 
+    let set (dtyp : t) : t =
+        match dtyp.typ with
+        | Set dtyp -> dtyp
+        | _ -> asprintf "expected set type, found %a" fmt dtyp |> Exc.throw
+
+    let map (dtyp : t) : t * t =
+        match dtyp.typ with
+        | Map (k, v)
+        | BigMap (k, v) -> k, v
+        | _ -> asprintf "expected map type, found %a" fmt dtyp |> Exc.throw
+
+    let iter_elm (dtyp : t) : t =
+        match dtyp.typ with
+        | List sub
+        | Set sub -> sub
+        | Map (key, value) ->
+            let key = mk_named None key in
+            let value = mk_named None value in
+            Pair (key, value) |> mk
+        | _ -> asprintf "expected collection type, found %a" fmt dtyp |> Exc.throw
+    let lambda (dtyp : t) : t * t =
+        match dtyp.typ with
+        | Lambda (dom, codom) -> dom, codom
+        | _ -> asprintf "expected lambda, found %a" fmt dtyp |> Exc.throw
+
 end
 
 let unit : t = mk_leaf Unit
 let int : t = mk_leaf Int
 let nat : t = mk_leaf Nat
 let timestamp : t = mk_leaf Timestamp
-
-(* # TODO
-
-    - stackless
-*)
-let rec check (t_1 : t) (t_2 : t) : unit =
-    let bail () =
-        asprintf "types `%a` and `%a` are not compatible" fmt t_1 fmt t_2
-        |> Exc.throw
-    in
-    (
-        if t_1.alias <> t_2.alias then bail ()
-    );
-    match t_1.typ, t_2.typ with
-    | Leaf leaf_1, Leaf leaf_2 ->
-        if leaf_1 <> leaf_2 then bail ()
-
-    | Option sub_1, Option sub_2
-    | List sub_1, List sub_2
-    | Set sub_1, Set sub_2
-    | Contract sub_1, Contract sub_2 -> check sub_1 sub_2
-
-    | Map (k_1, v_1), Map (k_2, v_2)
-    | BigMap (k_1, v_1), BigMap (k_2, v_2) ->
-        check k_1 k_2;
-        check v_1 v_2
-
-    | Pair (lft_1, rgt_1), Pair (lft_2, rgt_2)
-    | Or (lft_1, rgt_1), Or (lft_2, rgt_2) -> (
-        if lft_1.name <> lft_2.name
-        || rgt_1.name <> rgt_2.name then bail ();
-
-        check lft_1.inner lft_2.inner;
-        check rgt_1.inner rgt_2.inner
-    )
-
-    | Leaf _, _
-    | Option _, _
-    | List _, _
-    | Set _, _
-    | Contract _, _
-    | Map _, _
-    | BigMap _, _
-    | Pair _, _
-    | Or _, _ -> bail ()

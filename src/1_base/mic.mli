@@ -30,6 +30,7 @@ module Macro : sig
     | Cmp of op
     | If of (op * 'ins * 'ins)
     | IfCmp of (op * 'ins * 'ins)
+    | IfSome of 'ins * 'ins
     | Int
     | Fail
     | Assert
@@ -44,7 +45,6 @@ module Macro : sig
     | P of pair_op list
     | Unp of pair_op list
     | CadR of unpair_op list
-    | IfSome of 'ins * 'ins
     | SetCadr of unpair_op list
     | MapCadr of unpair_op list * 'ins
 
@@ -99,8 +99,8 @@ type leaf =
 | StepsToQuota
 | Now
 | Pack
-| Unpack
 | Slice
+| Address
 | Hash of hash_fun
 | CheckSignature
 | Rename
@@ -119,25 +119,24 @@ val leaf_of_string : string -> leaf option
 *)
 val annot_arity_of_leaf : leaf -> int * int * int
 
+(** Extensions. *)
 type extension =
-| StorageOf of Dtyp.t
-| BalanceOf
+| GetStorage of Dtyp.t
+| GetBalance
 | ApplyOps
 | PrintStack
-| MustFail
-
-val fmt_extension :
-    ?annots : (formatter -> unit -> unit) ->
-    formatter ->
-    extension ->
-    unit
+| MustFail of Dtyp.t
+| Step of string option
+| SetSource of t
+| SpawnContract of Dtyp.t
 
 (** Instructions. *)
-type 'sub ins =
+and 'sub ins =
 | Leaf of leaf
 | Cast of Dtyp.t
 | EmptySet of Dtyp.t
 | EmptyMap of Dtyp.t * Dtyp.t
+| Unpack of Dtyp.t
 | Non of Dtyp.t
 | Left of Dtyp.t
 | Right of Dtyp.t
@@ -151,6 +150,12 @@ type 'sub ins =
 | Push of Dtyp.t * const
 | Lambda of Dtyp.t * Dtyp.t * 'sub
 | Iter of 'sub
+| Map of Dtyp.t * 'sub
+(** Map over maps.
+
+    - type of the codomain of the lambda
+    - lambda to apply
+*)
 | IfNone of 'sub * 'sub
 | IfLeft of 'sub * 'sub
 | IfRight of 'sub * 'sub
@@ -160,7 +165,7 @@ type 'sub ins =
 | Extension of extension
 
 and const =
-| Unit
+| U
 
 | Bool of bool
 | Int of string
@@ -174,6 +179,9 @@ and const =
 
 | No
 | So of const
+
+| Pr of const * const
+| Lst of const list
 
 and contract = {
     storage : Dtyp.t ;
@@ -190,10 +198,14 @@ and t = {
     typs : Annot.typs ;
     vars : Annot.vars ;
     fields : Annot.fields ;
+    comments : string list ;
 }
 
 (** Type of a contract. *)
 val typ_of_contract : ?alias : Annot.Typ.t option -> contract -> Dtyp.t
+
+(** The unit contract. *)
+val unit_contract : contract
 
 (** Creates a string constant.
 
@@ -205,8 +217,12 @@ val mk :
     ?vars: Annot.vars ->
     ?fields: Annot.fields ->
     ?typs: Annot.typs ->
+    ?comments: string list ->
     t ins ->
     t
+
+(** Creates an instruction. *)
+val nu_mk : ?annot : Annot.t option -> ?comments : string list -> t ins -> t
 
 (** Creates a contract. *)
 val mk_contract : storage : Dtyp.t -> param : Dtyp.t -> t -> contract
@@ -224,8 +240,18 @@ val mk_leaf :
     leaf ->
     t
 
+(** Creates an instruction from a leaf. *)
+val nu_mk_leaf : ?annot : Annot.t option -> ?comments : string list -> leaf -> t
+
 (** Creates a sequence instruction. *)
 val mk_seq : t list -> t
+
+(** Extension formatter. *)
+val fmt_extension :
+    ?annots : (formatter -> unit -> unit) ->
+    formatter ->
+    extension ->
+    unit
 
 (** Contract formatter. *)
 val fmt_contract : formatter -> contract -> unit
@@ -235,3 +261,6 @@ val fmt_const : formatter -> const -> unit
 
 (** Instruction formatter. *)
 val fmt : formatter -> t -> unit
+
+(** Adds comments to an instruction. *)
+val comments : string list -> t -> t

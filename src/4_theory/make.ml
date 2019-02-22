@@ -47,10 +47,17 @@ module Theory (
                     fun () -> sprintf "cannot convert string `%s` to tezos" s
                 )
             let of_native (n : Int64.t) : t = n
-            let to_native (t : t) : int = Int64.to_int t
+            let to_native (t : t) : Int64.t = t
 
             let add (t_1 : t) (t_2 : t) : t =
-                Int64.add t_1 t_2
+                let overflow_if_gt_zero = Int64.sub Int64.max_int t_1 |> Int64.compare t_2 in
+                if overflow_if_gt_zero <= 0 then
+                    Int64.add t_1 t_2
+                else (
+                    asprintf "while adding %a and %a" fmt t_1 fmt t_2
+                    |> Exc.Throw.mutez_overflow
+                )
+
             let sub (t_1 : t) (t_2 : t) : t =
                 if t_1 < t_2 then (
                     sprintf
@@ -161,6 +168,14 @@ module Theory (
 
             | By _, Leaf Bytes -> t
 
+            | S s, Leaf KeyH -> KeyH (Str.to_string s |> KeyH.of_native)
+
+            | S s, Leaf Timestamp -> Ts (Str.to_string s |> TStamp.of_native)
+            | I i, Leaf Timestamp -> Ts (TStampConv.int_to_tstamp i)
+            | N n, Leaf Timestamp -> Ts (
+                NatConv.nat_to_int n
+                |> TStampConv.int_to_tstamp
+            )
             | Ts _, Leaf Timestamp -> t
 
             | KeyH _, Leaf KeyH -> t
@@ -201,6 +216,8 @@ module Theory (
         let to_nat : t -> Cmp.Nat.t option = Cmp.NatConv.int_to_nat
         let of_nat : Cmp.Nat.t -> t = Cmp.NatConv.nat_to_int
         let abs : t -> Cmp.Nat.t = Cmp.NatConv.int_abs
+        let ediv : t -> t -> (t * Cmp.Nat.t) option = Cmp.NatConv.ediv
+        let conj_nat : t -> Cmp.Nat.t -> Cmp.Nat.t = Cmp.NatConv.int_nat_conj
     end
 
     module Nat = struct
@@ -213,14 +230,14 @@ module Theory (
     module Str = struct
         include Cmp.Str
         let size : t -> Nat.t = Cmp.StrConv.size
-        let slice : Nat.t -> Nat.t -> t -> t = Cmp.StrConv.slice
+        let slice : Nat.t -> Nat.t -> t -> t option = Cmp.StrConv.slice
         let compare : t -> t -> Int.t = Cmp.StrConv.compare
     end
 
     module Bytes = struct
         include Cmp.Bytes
         let size : t -> Nat.t = Cmp.BytesConv.size
-        let slice : Nat.t -> Nat.t -> t -> t = Cmp.BytesConv.slice
+        let slice : Nat.t -> Nat.t -> t -> t option = Cmp.BytesConv.slice
         let compare : t -> t -> Int.t = Cmp.BytesConv.compare
     end
 
@@ -275,6 +292,7 @@ module Theory (
         )
         type 'a t = 'a Inner.t
         type key = Cmp.t
+
         let empty = Inner.empty
         let mem = Inner.mem
         let get (k : key) (map : 'a t) : 'a option =
@@ -284,7 +302,14 @@ module Theory (
             Inner.update e (fun _ -> v) map
         let fold (f : 'acc -> key -> 'a -> 'acc) (acc : 'acc) (map : 'a t) : 'acc =
             Inner.fold (fun k a acc -> f acc k a) map acc
-        let fold_as (f_k : key -> 'k) (f_v : 'a -> 'b) (f : 'acc -> 'k -> 'b -> 'acc) (acc : 'acc) (map : 'a t) : 'acc =
+        let fold_as
+            (f_k : key -> 'k)
+            (f_v : 'a -> 'b)
+            (f : 'acc -> 'k -> 'b -> 'acc)
+            (acc : 'acc)
+            (map : 'a t)
+            : 'acc
+        =
             fold (fun acc k v -> f acc (f_k k) (f_v v)) acc map
         let map (f : key -> 'a -> 'b) (t : 'a t) : 'b t = Inner.mapi f t
         let map_as (f_k : key -> 'k) (f_v : 'a -> 'b) (f : 'k -> 'b -> 'c) (t : 'a t) : 'c t =
@@ -293,6 +318,9 @@ module Theory (
             ) t
         let size (t : 'a t) : Cmp.Nat.t =
             Inner.cardinal t |> sprintf "%i" |> Cmp.Nat.of_string
+
+        let bindings (self : 'a t) : (key * 'a) list = Inner.bindings self
+
         let fmt (fmt_a : formatter -> 'a -> unit) (fmt : formatter) (map : 'a t) : unit =
             fprintf fmt "@[@[<hv 2>{";
             fold (
@@ -349,6 +377,9 @@ module Theory (
         let cons hd tl = hd :: tl
         let nil = []
 
+        let of_list (l : 'a list) : 'a t = l
+        let to_list (l : 'a t) : 'a list = l
+
         let fmt (fmt_a : formatter -> 'a -> unit) (fmt : formatter) (lst : 'a t) : unit =
             fprintf fmt "@[@[<hv 2>[";
             fold (
@@ -380,23 +411,35 @@ module Theory (
     | Contract of Address.t option * Mic.contract
     | Operation of int * operation
     | Address of Address.t
+    | Lambda of Dtyp.t * Dtyp.t * Mic.t
+    | Packed of value * Dtyp.t
 
     and contract_params = {
         address : Address.t ;
         manager : KeyH.t ;
-        delegate : KeyH.t option ;
+        mutable delegate : KeyH.t option ;
         spendable : bool ;
         delegatable : bool ;
         tez : Tez.t ;
         value : value ;
     }
 
+    and transfer_info = {
+        source : Address.t ;
+        sender : Address.t ;
+        target : Address.t ;
+        contract : Mic.contract ;
+        amount : Tez.t ;
+        param : value ;
+    }
+
     and operation =
-    | MustFail of value option * operation * int
+    | MustFail of (value * Dtyp.t) option * operation * int
     | Create of contract_params * Mic.contract
     | CreateNamed of contract_params * Contract.t
     | InitNamed of contract_params * value * string
-    | Transfer of Address.t * Mic.contract * Tez.t * value
+    | Transfer of transfer_info
+    | SetDelegate of Address.t * KeyH.t option
 
     let mk_contract_params
         ~(spendable : bool)
@@ -409,6 +452,9 @@ module Theory (
         : contract_params
     =
         { address ; manager ; delegate ; spendable ; delegatable ; tez ; value }
+
+    let set_delegate (delegate : KeyH.t option) (self : contract_params) : unit =
+        self.delegate <- delegate
 
     let rec fmt_contract_params (fmtt : formatter) (params : contract_params) : unit =
         fprintf fmtt "(@%a, %a, %a, %b, %b, %a)"
@@ -425,7 +471,7 @@ module Theory (
             (
                 match value with
                 | None -> fprintf fmtt "_"
-                | Some v -> fmt fmtt v
+                | Some (v, t) -> fprintf fmtt "%a : %a" fmt v Dtyp.fmt t
             );
             fprintf fmtt " (%a)" (fmt_operation op_uid) operation
         | Create (params, contract) ->
@@ -437,9 +483,12 @@ module Theory (
         | InitNamed (params, value, name) ->
             fprintf fmtt "@[<hv 4>CREATE[uid:%i] %a %a %s@]"
                 uid fmt_contract_params params fmt value name
-        | Transfer (address, _, tez, value) ->
-            fprintf fmtt "@[<hv 4>TRANSFER[uid:%i] %a %a %a@]"
-                uid Address.fmt address Tez.fmt tez fmt value
+        | Transfer { target ; amount ; sender ; param ; _ } ->
+            fprintf fmtt "@[<hv 4>TRANSFER[uid:%i] %a -> %a %a %a@]"
+                uid Address.fmt sender Address.fmt target Tez.fmt amount fmt param
+        | SetDelegate (address, delegate) ->
+            fprintf fmtt "@[<hv 4>SET_DELEGATE[uid:%i] %a %a@]"
+                uid Address.fmt address (Opt.fmt KeyH.fmt) delegate
         
 
     and fmt (fmt : formatter) (v : value) : unit =
@@ -460,33 +509,39 @@ module Theory (
                 go_up stack
 
             | Set set ->
-                fprintf fmt "Set {";
-                let _, elms =
+                fprintf fmt "AASet {";
+                let elms =
                     Set.fold (
                         fun (is_first, acc) value ->
                             let pref = if is_first then " " else ", " in
                             false, (pref, C value) :: acc
                     ) (true, []) set
+                    |> snd
+                    |> List.rev
                 in
                 go_up ((elms, " }") :: stack)
             | Map map ->
                 fprintf fmt "Map {";
-                let _, elms =
+                let elms =
                     Map.fold (
                         fun (is_first, acc) key value ->
                             let pref = if is_first then " " else ", " in
-                            false, (pref, C key) :: (" -> ", value) :: acc
+                            false, (" -> ", value) :: (pref, C key) :: acc
                     ) (true, []) map
+                    |> snd
+                    |> List.rev
                 in
                 go_up ((elms, " }") :: stack)
             | BigMap map ->
                 fprintf fmt "BigMap {";
-                let _, elms =
+                let elms =
                     Map.fold (
                         fun (is_first, acc) key value ->
                             let pref = if is_first then " " else ", " in
-                            false, (pref, C key) :: (" -> ", value) :: acc
+                            false, (" -> ", value) :: (pref, C key) :: acc
                     ) (true, []) map
+                    |> snd
+                    |> List.rev
                 in
                 go_up ((elms, " }") :: stack)
 
@@ -528,7 +583,9 @@ module Theory (
 
             | Contract (address, contract) -> (
                 match address with
-                | Some a -> Address.fmt fmt a
+                | Some a ->
+                    Address.fmt fmt a;
+                    go_up stack
                 | None -> (
                     fprintf fmt "{ storage : @[%a@] ; param : @[%a@] ; code : @[%a@] ; }"
                         Dtyp.fmt contract.Mic.storage
@@ -541,6 +598,14 @@ module Theory (
             | Operation (uid, op) ->
                 fprintf fmt "%a" (fmt_operation uid) op;
                 go_up stack
+
+            | Lambda (dom, codom, mic) ->
+                fprintf fmt "LAMBDA %a %a %a"
+                    Dtyp.fmt dom Dtyp.fmt codom Mic.fmt mic;
+                go_up stack
+            | Packed (value, dtyp) ->
+                fprintf fmt "(Packed %a " Dtyp.fmt dtyp;
+                go_down (([], ")") :: stack) value
 
         and go_up (stack : ((string * value) list * string) list) : unit =
             match stack with
@@ -557,21 +622,6 @@ module Theory (
 
         go_down [] v
 
-    let cast (dtyp : Dtyp.t) (v : value) : value =
-        let bail_msg () =
-            asprintf "cannot cast value `%a` to type `%a`" fmt v Dtyp.fmt dtyp
-        in
-        match dtyp.typ, v with
-        | Dtyp.Leaf Dtyp.Key, C (Cmp.S s) ->
-            Key (Str.to_string s |> Key.of_native)
-        | Dtyp.Contract param, Contract (_, c) ->
-            if c.Mic.param = param then v else bail_msg () |> Exc.throw
-        | _ -> (
-            match v with
-            | C cmp -> C (Cmp.cast dtyp cmp)
-            | _ -> bail_msg () |> Exc.throw
-        )
-
     module Of = struct
         let int (i : Int.t) : value = C (Cmp.I i)
         let nat (i : Nat.t) : value = C (Cmp.N i)
@@ -579,8 +629,11 @@ module Theory (
         let bytes (by : Bytes.t) : value = C (Cmp.By by)
         let timestamp (ts : TStamp.t) : value = C (Cmp.Ts ts)
         let key (k : Key.t) : value = Key k
-        let key_h (kh : KeyH.t) : value = C (Cmp.KeyH kh)
+        let key_hash (kh : KeyH.t) : value = C (Cmp.KeyH kh)
         let tez (tz : Tez.t) : value = C (Cmp.Tz tz)
+
+        let lambda (domain : Dtyp.t) (codomain : Dtyp.t) (mic : Mic.t) : value =
+            Lambda (domain, codomain, mic)
 
         let address (a : Address.t) : value = Address a
 
@@ -605,56 +658,236 @@ module Theory (
 
         let contract (a : Address.t) (c : Mic.contract) : value = Contract (Some a, c)
 
-        let const (c : Mic.const) : value =
-            let rec go_down (stack : (value -> value) list) (c : Mic.const) : value =
+        type constructor = value -> value
+        type list_constructor = value list -> value
+        type frame =
+        | Con of constructor
+        (* A simple constructor. Takes a value and produces a value. *)
+        | LstCon of list_constructor * Mic.const list * value list
+        (* Constructs a value from a list.
+
+            First is the constructor, then the constants to transpose, values already processed in
+            reverse order.
+        *)
+
+        let const (dtyp : Dtyp.t) (c : Mic.const) : value =
+            let rec go_down (stack : frame list) (c : Mic.const) : value =
                 match c with
-                | Unit -> U
+                | Mic.U -> U |> go_up stack
 
-                | Bool b -> C (Cmp.B b) |> go_up stack
-                | Int i -> C (Cmp.I (Cmp.Int.of_string i)) |> go_up stack
-                | Str s -> C (Cmp.S (Cmp.Str.of_native s)) |> go_up stack
-                | Bytes by -> C (Cmp.By (Cmp.Bytes.of_native by)) |> go_up stack
+                | Mic.Bool b -> C (Cmp.B b) |> go_up stack
+                | Mic.Int i -> C (Cmp.I (Cmp.Int.of_string i)) |> go_up stack
+                | Mic.Str s -> C (Cmp.S (Cmp.Str.of_native s)) |> go_up stack
+                | Mic.Bytes by -> C (Cmp.By (Cmp.Bytes.of_native by)) |> go_up stack
 
-                | Cont c -> Contract (None, c)
+                | Mic.Cont c -> Contract (None, c) |> go_up stack
 
-                | No -> Option None |> go_up stack
+                | Mic.No -> Option None |> go_up stack
 
-                | So c -> go_down ((fun v -> Option (Some v)) :: stack) c
-                | Lft c -> go_down ((fun v -> Either (Either.Lft v)) :: stack) c
-                | Rgt c -> go_down ((fun v -> Either (Either.Rgt v)) :: stack) c
+                | Mic.So c -> go_down (Con (fun v -> Option (Some v)) :: stack) c
+                | Mic.Lft c -> go_down (Con (fun v -> Either (Either.Lft v)) :: stack) c
+                | Mic.Rgt c -> go_down (Con (fun v -> Either (Either.Rgt v)) :: stack) c
 
-            and go_up (stack : (value -> value) list) (v : value) : value =
+                | Mic.Lst (hd :: tl) -> (
+                    let frame =
+                        LstCon ((fun lst -> Lst (Lst.of_list lst)), tl, [])
+                    in
+                    go_down (frame :: stack) hd
+                )
+                | Mic.Lst [] -> (
+                    match dtyp.typ with
+                    | Dtyp.List _ -> Lst (Lst.of_list [])
+                    | Dtyp.Set _ -> Set (Set.empty)
+                    | Dtyp.Map _ -> Map (Map.empty)
+                    | _ ->
+                        asprintf "cannot cast constant %a to %a" Mic.fmt_const c Dtyp.fmt dtyp
+                        |> Exc.throw
+                ) |> go_up stack
+
+                | Mic.Pr (fst, snd) ->
+                    let frame =
+                        (fun () ->
+                            LstCon (
+                                (function
+                                    | [ fst ; snd ] -> pair fst snd
+                                    | l ->
+                                        List.length l
+                                        |> sprintf "\
+                                            expected list of two elements for pair constructor, \
+                                            found %i\
+                                        "
+                                        |> Exc.throw
+                                ),
+                                [snd],
+                                []
+                            )
+                        )
+                        |> Exc.chain_err (
+                            fun () ->
+                                asprintf
+                                    "internal error while constructing value from %a"
+                                    Mic.fmt_const c
+                        )
+                    in
+                    go_down (frame :: stack) fst
+
+            and go_up (stack : frame list) (v : value) : value =
                 match stack with
                 | [] -> v
-                | constructor :: stack -> constructor v |> go_up stack
+                | (Con constructor) :: stack -> constructor v |> go_up stack
+                | (LstCon (constructor, [], tail)) :: stack ->
+                    v :: tail |> List.rev |> constructor |> go_up stack
+                | (LstCon (constructor, cst :: cst_tail, values)) ::  stack ->
+                    let stack = (LstCon (constructor, cst_tail, v :: values)) :: stack in
+                    go_down stack cst
             in
             go_down [] c
 
         module Operation = struct
             let create (uid : int) (params : contract_params) (contract : Mic.contract) : value =
                 Operation (uid, Create (params, contract))
-            let create_named (uid : int) (params : contract_params) (contract : Contract.t) : value =
+            let create_named
+                (uid : int)
+                (params : contract_params)
+                (contract : Contract.t)
+                : value
+            =
                 Operation (uid, CreateNamed (params, contract))
-            let init_named (uid : int) (params : contract_params) (input : value) (name : string) : value =
+            let init_named
+                (uid : int)
+                (params : contract_params)
+                (input : value)
+                (name : string)
+                : value
+            =
                 Operation (uid, InitNamed (params, input, name))
-            let transfer (uid : int) (address : Address.t) (contract : Mic.contract) (tez : Tez.t) (param : value) : value =
-                Operation (uid, Transfer (address, contract, tez, param))
-            let must_fail (uid : int) (value : value option) (op, op_uid : operation * int) : value =
+            let transfer (uid : int) (info : transfer_info) : value
+            =
+                Operation (uid, Transfer info)
+            let must_fail
+                (uid : int)
+                (value : (value * Dtyp.t) option)
+                (op, op_uid : operation * int)
+                : value
+            =
                 Operation (uid, MustFail (value, op, op_uid))
+            let set_delegate (uid : int) (address : Address.t) (delegate : KeyH.t option) : value =
+                Operation (uid, SetDelegate (address, delegate))
         end
     end
 
     module Inspect = struct
+        let cmp (v : value) : Cmp.t =
+            match v with
+            | C cmp -> cmp
+            | _ -> asprintf "expected a comparable value, found `%a`" fmt v |> Exc.throw
+
+        let str (v : value) : Str.t =
+            match v with
+            | C (Cmp.S s) -> s
+            | _ -> asprintf "expected a string value, found `%a`" fmt v |> Exc.throw
+
+        let bytes (v : value) : Bytes.t =
+            match v with
+            | C (Cmp.By by) -> by
+            | _ -> asprintf "expected some bytes, found `%a`" fmt v |> Exc.throw
+
         let key (v : value) : Key.t =
             match v with
             | Key k -> k
             | _ -> asprintf "expected a key, found `%a`" fmt v |> Exc.throw
 
+        let pair (v : value) : value * value =
+            match v with
+            | Pair (v_1, v_2) -> v_1, v_2
+            | _ -> asprintf "expected a pair, found `%a`" fmt v |> Exc.throw
+
         let list (v : value) : value Lst.t =
             match v with
             | Lst l -> l
             | _ -> asprintf "expected a list value, found `%a`" fmt v |> Exc.throw
+
+        let map (v : value) : value Map.t =
+            match v with
+            | Map map -> map
+            | _ -> asprintf "expected a map value, found `%a`" fmt v |> Exc.throw
     end
+
+    (*  # TODO
+
+        - stackless
+    *)
+    let rec cast (dtyp : Dtyp.t) (v : value) : value =
+        let bail_msg () =
+            asprintf "cannot cast value `%a` to type `%a`" fmt v Dtyp.fmt dtyp
+        in
+        match dtyp.typ, v with
+        | Dtyp.Leaf Dtyp.Key, C (Cmp.S s) ->
+            Key (Str.to_string s |> Key.of_native)
+        | Dtyp.Leaf Dtyp.Unit, U -> v
+
+        | Dtyp.Contract param, Contract (_, c) ->
+            if c.Mic.param = param then v else bail_msg () |> Exc.throw
+
+        | Dtyp.List sub, Lst l ->
+            (fun () -> l |> List.map (cast sub))
+            |> Exc.chain_err bail_msg
+            |> Of.list
+
+        | Dtyp.Option _, Option None -> v
+        | Dtyp.Option sub, Option (Some v) -> (
+            let sub = cast sub.inner v in
+            Option (Some sub)
+        )
+
+        | Dtyp.Or (lft, _), Either (Either.Lft v) ->
+            (fun () -> Either (Either.Lft (cast lft.inner v)))
+            |> Exc.chain_err bail_msg
+        | Dtyp.Or (_, rgt), Either (Either.Rgt v) ->
+            (fun () -> Either (Either.Rgt (cast rgt.inner v)))
+            |> Exc.chain_err bail_msg
+
+        | Dtyp.Pair (lft, rgt), Pair (l, r) ->
+            (
+                fun () ->
+                    let lft = cast lft.inner l in
+                    let rgt = cast rgt.inner r in
+                    Pair (lft, rgt)
+            )
+            |> Exc.chain_err bail_msg
+
+        | Dtyp.Map (keys, values), Map map -> Map (
+            map |> Map.fold (
+                fun map key value ->
+                    let key = Of.cmp key |> cast keys in
+                    let value = cast values value in
+                    Map.update (Inspect.cmp key) (Some value) map
+            ) Map.empty
+        )
+
+        | Dtyp.BigMap (keys, values), Map map -> Map (
+            map |> Map.fold (
+                fun bigmap key value ->
+                    let key = Of.cmp key |> cast keys in
+                    let value = cast values value in
+                    BigMap.update (Inspect.cmp key) (Some value) bigmap
+            ) BigMap.empty
+        )
+
+        | Dtyp.BigMap (keys, values), BigMap map -> BigMap (
+            map |> BigMap.fold (
+                fun bigmap key value ->
+                    let key = Of.cmp key |> cast keys in
+                    let value = cast values value in
+                    BigMap.update (Inspect.cmp key) (Some value) bigmap
+            ) BigMap.empty
+        )
+
+        | _ -> (
+            match v with
+            | C cmp -> C (Cmp.cast dtyp cmp)
+            | _ -> bail_msg () |> Exc.throw
+        )
 
     let cons (head : value) (tail : value) : value =
         let tail = Inspect.list tail in
@@ -672,7 +905,10 @@ module Theory (
 
     let cmp (v_1 : value) (v_2 : value) : value * Dtyp.t =
         match v_1, v_2 with
-        | C c_1, C c_2 -> C (Cmp.I (Cmp.cmp c_1 c_2 |> Int.of_native)), Dtyp.Int |> Dtyp.mk_leaf
+        | C c_1, C c_2 ->
+            C (Cmp.I (Cmp.cmp c_1 c_2 |> Int.of_native)), Dtyp.Int |> Dtyp.mk_leaf
+        | Address a_1, Address a_2 ->
+            C (Cmp.I (Address.compare a_1 a_2 |> Int.of_native)), Dtyp.Int |> Dtyp.mk_leaf
         | _ -> asprintf "cannot compare values %a and %a" fmt v_1 fmt v_2 |> Exc.throw
 
     let eq_raw (v_1 : value) (v_2 : value) : bool =
@@ -729,7 +965,7 @@ module Theory (
 
     let abs (v : value) : value * Dtyp.t =
         match v with
-        | C (Cmp.I i) -> C (Cmp.N (Int.abs i)), Dtyp.mk_leaf Dtyp.Int
+        | C (Cmp.I i) -> C (Cmp.N (Int.abs i)), Dtyp.mk_leaf Dtyp.Nat
         | _ -> asprintf "cannot compute absolute value for %a" fmt v |> Exc.throw
 
     let neg (v : value) : value * Dtyp.t =
@@ -791,15 +1027,130 @@ module Theory (
 
         | _ -> asprintf "cannot multiply %a and %a" fmt v_1 fmt v_2 |> Exc.throw
 
+    let ediv (v_1 : value) (v_2 : value) : value * Dtyp.t =
+        (*  - the numerator
+            - the denominator
+            - function to apply to the quotient: `Int.t -> value`
+            - type of the quotient
+            - function to apply to the remainder: `Nat.t -> value`
+            - type of the remainder
+        *)
+        let i_1, i_2, f_div, div_dtyp, f_rem, rem_dtyp =
+            let bail () =
+                asprintf "internal fatal error in `ediv` application to %a, %a"
+                    fmt v_1 fmt v_2
+                |> Exc.throw
+            in
+            match v_1, v_2 with
+            | C (Cmp.I i_1), C (Cmp.I i_2) -> (
+                i_1, i_2,
+                Of.int, Dtyp.mk_leaf Int,
+                Of.nat, Dtyp.mk_leaf Nat
+            )
+            | C (Cmp.N n_1), C (Cmp.I i_2) -> (
+                Nat.to_int n_1, i_2,
+                Of.int, Dtyp.mk_leaf Int,
+                Of.nat, Dtyp.mk_leaf Nat
+            )
+            | C (Cmp.I i_1), C (Cmp.N n_2) -> (
+                i_1, Nat.to_int n_2,
+                Of.int, Dtyp.mk_leaf Int,
+                Of.nat, Dtyp.mk_leaf Nat
+            )
+            | C (Cmp.N n_1), C (Cmp.N n_2) -> (
+                Nat.to_int n_1, Nat.to_int n_2,
+                (
+                    fun i ->
+                        match Nat.of_int i with
+                        | Some n -> Of.nat n
+                        | None -> bail ()
+                ), Dtyp.mk_leaf Nat,
+                Of.nat, Dtyp.mk_leaf Nat
+            )
+
+            | C (Cmp.Tz tz_1), C (Cmp.N n_2) -> (
+                Tez.to_nat tz_1 |> Nat.to_int, Nat.to_int n_2,
+                (
+                    fun i -> match Nat.of_int i with
+                    | Some n -> Tez.of_nat n |> Of.tez
+                    | None -> bail ()
+                ), Dtyp.mk_leaf Dtyp.Mutez,
+                (
+                    fun n -> Tez.of_nat n |> Of.tez
+                ), Dtyp.mk_leaf Dtyp.Mutez
+            )
+
+            | C (Cmp.Tz tz_1), C (Cmp.Tz tz_2) -> (
+                Tez.to_nat tz_1 |> Nat.to_int, Tez.to_nat tz_2 |> Nat.to_int,
+                (
+                    fun i -> match Nat.of_int i with
+                    | Some n -> Of.nat n
+                    | None -> bail ()
+                ), Dtyp.mk_leaf Dtyp.Nat,
+                (
+                    fun n -> Tez.of_nat n |> Of.tez
+                ), Dtyp.mk_leaf Dtyp.Mutez
+            )
+
+            | _ -> asprintf "cannot apply EDIV to %a and %a" fmt v_1 fmt v_2 |> Exc.throw
+        in
+        let dtyp =
+            Dtyp.Pair (
+                div_dtyp |> Dtyp.mk_named None,
+                rem_dtyp |> Dtyp.mk_named None
+            ) |> Dtyp.mk
+        in
+        let value () =
+            Int.ediv i_1 i_2 |> Opt.map (
+                fun (div, rem) ->
+                    let div, rem = f_div div, f_rem rem in
+                    Of.pair div rem
+            )
+            |> Of.option
+        in
+
+        let value = value |> Exc.catch_fail in
+        let dtyp = Dtyp.Option (Dtyp.mk_named None dtyp) |> Dtyp.mk in
+        value, dtyp
+
+    let lshift_lft (v_1 : value) (v_2 : value) : value * Dtyp.t =
+        let dtyp = Dtyp.mk_leaf Dtyp.Nat in
+        match v_1, v_2 with
+        | C (Cmp.N n_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Nat.lshift_lft n_1 n_2)), dtyp
+        | _ -> asprintf "cannot apply LSL to %a and %a" fmt v_1 fmt v_2 |> Exc.throw
+
+    let lshift_rgt (v_1 : value) (v_2 : value) : value * Dtyp.t =
+        let dtyp = Dtyp.mk_leaf Dtyp.Nat in
+        match v_1, v_2 with
+        | C (Cmp.N n_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Nat.lshift_rgt n_1 n_2)), dtyp
+        | _ -> asprintf "cannot apply LSL to %a and %a" fmt v_1 fmt v_2 |> Exc.throw
+
     let disj (v_1 : value) (v_2 : value) : value * Dtyp.t =
         match v_1, v_2 with
         | C (Cmp.B b_1), C (Cmp.B b_2) -> C (Cmp.B (b_1 || b_2)), Dtyp.Bool |> Dtyp.mk_leaf
+        | C (Cmp.N n_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Nat.disj n_1 n_2)), Dtyp.Nat |> Dtyp.mk_leaf
 
         | _ -> asprintf "cannot compute disjunction of %a and %a" fmt v_1 fmt v_2 |> Exc.throw
 
     let conj (v_1 : value) (v_2 : value) : value * Dtyp.t =
         match v_1, v_2 with
         | C (Cmp.B b_1), C (Cmp.B b_2) -> C (Cmp.B (b_1 && b_2)), Dtyp.Bool |> Dtyp.mk_leaf
+        | C (Cmp.N n_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Nat.conj n_1 n_2)), Dtyp.Nat |> Dtyp.mk_leaf
+        | C (Cmp.I i_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Int.conj_nat i_1 n_2)), Dtyp.Nat |> Dtyp.mk_leaf
+
+        | _ -> asprintf "cannot compute conjunction of %a and %a" fmt v_1 fmt v_2 |> Exc.throw
+
+    let xor (v_1 : value) (v_2 : value) : value * Dtyp.t =
+        match v_1, v_2 with
+        | C (Cmp.B b_1), C (Cmp.B b_2) ->
+            C (Cmp.B ((b_1 && not b_2) || (not b_1 && b_2))), Dtyp.Bool |> Dtyp.mk_leaf
+        | C (Cmp.N n_1), C (Cmp.N n_2) ->
+            C (Cmp.N (Nat.xor n_1 n_2)), Dtyp.Nat |> Dtyp.mk_leaf
 
         | _ -> asprintf "cannot compute conjunction of %a and %a" fmt v_1 fmt v_2 |> Exc.throw
 
@@ -808,4 +1159,36 @@ module Theory (
         | C (Cmp.B b) -> C (Cmp.B (not b)), Dtyp.Bool |> Dtyp.mk_leaf
 
         | _ -> asprintf "cannot compute negation of %a" fmt v |> Exc.throw
+
+    let coll_to_list (v : value) : value list =
+        match v with
+        | Lst lst -> lst
+        | Set set -> (
+            Set.fold_as (Of.cmp) (fun acc elm -> elm :: acc) [] set |> List.rev
+        )
+        | Map map -> (
+            Map.fold (
+                fun (acc : value list) key value ->
+                    let key = key |> Of.cmp in
+                    let pair = Of.pair key value in
+                    pair :: acc
+            ) ([] : value list) map |> List.rev
+        )
+        | BigMap map -> (
+            BigMap.fold (
+                fun acc key value ->
+                    let key = key |> Of.cmp in
+                    let pair = Of.pair key value in
+                    pair :: acc
+            ) [] map |> List.rev
+        )
+        | _ -> asprintf "cannot turn this value into a list: %a" fmt v |> Exc.throw
+
+    let unpack (v : value) : value * Dtyp.t =
+        match v with
+        | Packed (value, dtyp) -> value, dtyp
+        | _ -> asprintf "cannot unpack value %a" fmt v |> Exc.throw
+
+    let pack (value : value) (dtyp : Dtyp.t) : value =
+        Packed (value, dtyp)
 end

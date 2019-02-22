@@ -28,7 +28,7 @@ module Int : Sigs.Int with type t = int = struct
     let to_native (t : t) : int = t
 end
 
-module Nat : Sigs.Arith with type t = int = struct
+module Nat : Sigs.Nat with type t = int = struct
     type t = int
 
     let of_native (n : int) : t = n
@@ -53,6 +53,15 @@ module Nat : Sigs.Arith with type t = int = struct
     let add (t_1 : t) (t_2 : t) : t = t_1 + t_2
     let mul (t_1 : t) (t_2 : t) : t = t_1 * t_2
     let div (t_1 : t) (t_2 : t) : t = t_1 / t_2
+    
+    let lshift_lft (n : t) (m : t) : t = n lsl m
+    let lshift_rgt (n : t) (m : t) : t = n lsr m
+
+    let xor (n : t) (m : t) : t = n lxor m
+
+    let conj (n : t) (m : t) : t = n land m
+
+    let disj (n : t) (m : t) : t = n lor m
 
     let fmt (fmt : formatter) (t : t) : unit =
         fprintf fmt "%ip" t
@@ -69,22 +78,17 @@ end = struct
     let concat (t_1 : t) (t_2 : t) : t = t_1 ^ t_2
 
     let fmt (fmt : formatter) (t : t) : unit =
-        fprintf fmt "\"%s\"" t
+        fprintf fmt "%S" t
 end
 
 module Bytes : Sigs.Str with type t = string = struct
-    type t = string
-    let of_native (s : string) : t = s
-    let to_string (t : t) : string = t
-
-    let concat (t_1 : t) (t_2 : t) : t = t_1 ^ t_2
-
-    let fmt (fmt : formatter) (t : t) : unit =
-        fprintf fmt "\"%s\"" t
+    include Str
 end
 
 module TStamp : Sigs.TStamp with type t = int = struct
     type t = int
+
+    let now () : t = 42. +. (100. *. Sys.time ()) |> Float.floor |> Float.to_int
 
     let to_string (t : t) : string =
         sprintf "%i" t
@@ -93,8 +97,6 @@ module TStamp : Sigs.TStamp with type t = int = struct
         |> Exc.chain_err (
             fun () -> asprintf "illegal timestamp `%s`" s
         )
-
-    let now () : t = 42. +. (100. *. Sys.time ()) |> Float.floor |> Float.to_int
 
     let compare (t_1 : t) (t_2 : t) : Int.t = compare t_1 t_2 |> Int.of_native
 
@@ -116,6 +118,21 @@ module NatConv : Sigs.NatConv with type int = Int.t and type nat = Nat.t = struc
             | Some res -> res
         )
         | Some res -> res
+    let ediv (i_1 : Int.t) (i_2 : Int.t) : (Int.t * Nat.t) option =
+        try (
+            let q = i_1 / i_2 in
+            let r = i_1 mod i_2 in
+            let q, r =
+                if r < 0 && q >= 0 then
+                    q + 1, r - i_2
+                else if r < 0 && q < 0 then
+                    q - 1, r + i_2
+                else q - 1, i_2 + r
+            in
+            Some (Int.of_native q, Nat.of_native r)
+        ) with
+        | Division_by_zero -> None
+    let int_nat_conj (i_1 : Int.t) (n_2 : Nat.t) : Nat.t = i_1 land n_2
 end
 
 module StrConv
@@ -125,8 +142,13 @@ module StrConv
     type int = Int.t
     type nat = Nat.t
     let size (t : Str.t) : Nat.t = String.length t |> sprintf "%i" |> Nat.of_string
-    let slice (start : Nat.t) (len : Nat.t) (t : Str.t) : Str.t =
-        String.sub t (Nat.to_native start) (Nat.to_native len)
+    let slice (start : Nat.t) (len : Nat.t) (t : Str.t) : Str.t option =
+        let slice_len = Nat.add start len in
+        let string_len = size t in
+        if Nat.compare slice_len string_len > 0 then
+            None
+        else
+            Some (String.sub t (Nat.to_native start) (Nat.to_native len))
     let compare (t_1 : Str.t) (t_2 : Str.t) : Int.t = compare t_1 t_2 |> Int.of_native
 end
 
@@ -136,6 +158,7 @@ module TStampConv
     type t_stamp = TStamp.t
     type int = Int.t
 
+    let int_to_tstamp (i : int) : t_stamp = i * 100
     let add (t : t_stamp) (i : int) : t_stamp = t + (i * 100)
     let sub_int (t : t_stamp) (i : int) : t_stamp = t - (i * 100) |> Int.of_native
     let sub (t_1 : t_stamp) (t_2 : t_stamp) : int = t_1 - t_2 |> Int.of_native
@@ -143,6 +166,7 @@ end
 
 module Key : Sigs.Key with type t = string = struct
     type t = string
+
     let fmt (fmt : formatter) (t : t) : unit = fprintf fmt "\"%s\"" t
     let of_native (s : string) : t = s
     let to_string (t : t) : string = t
@@ -185,6 +209,8 @@ module Address : Sigs.Address = struct
         self.uid = other.uid
 
     let uid (self : t) : int = self.uid
+
+    let compare (t_1 : t) (t_2 : t) : int = compare t_1.uid t_2.uid
 end
 
 module Prims : Sigs.Primitive = struct

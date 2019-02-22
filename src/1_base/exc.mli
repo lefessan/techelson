@@ -2,6 +2,9 @@
 
 open Format
 
+(** If true, then the backtrace will be included when raising exceptions. *)
+val set_print_backtrace : bool -> unit
+
 (** Internal exception encode special behavior.
 
     These exception should always be caught internally.
@@ -25,6 +28,16 @@ module Protocol : sig
     type t =
     | Failure of string
     (** Ran into the `FAILWITH` instruction. *)
+    | TooPoor of string * string * Int64.t
+    (** Insufficient amount to process transaction.
+
+        First string is the name of the sender, second is the name of the target, last is the amount of the transaction that triggered this beharior.
+    *)
+    | MutezOvrflw of string
+    (** Mutez overflow.
+
+        Can happen either during a transfer or during operations on mutez.
+    *)
     | Tezos of string
     (** Something went wrong in the protocol.
 
@@ -37,7 +50,7 @@ end
 
 (** Aggregates all theory-agnostic errors. *)
 type exc =
-| Error of string list * exn option
+| Error of string list * exn option * Printexc.raw_backtrace
 (** Thrown when something bad happens internally. *)
 | Internal of Internal.t
 (** Internal exception that encodes special behavior. *)
@@ -60,6 +73,12 @@ module Throw : sig
 
     (** Raises a tezos protocol error. *)
     val tezos : string -> 'a
+
+    (** Raises an insufficient amount error. *)
+    val too_poor : src : string -> tgt : string -> amount : Int64.t -> 'a
+
+    (** Raises a mutez overflow error. *)
+    val mutez_overflow : string -> 'a
 end
 
 (** Raises an exception from a single trace frame. *)
@@ -94,3 +113,9 @@ val unreachable : unit -> 'a
 
 (** Fails by saying an unimplemented feature was triggered. *)
 val unimplemented : unit -> 'a
+
+(** If the exception was originally a protocol error, returns that error. *)
+val get_protocol : exn -> Protocol.t option
+
+(** If the exception was originally an internal error, returns that error. *)
+val get_internal : exn -> Internal.t option
