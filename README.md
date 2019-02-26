@@ -4,6 +4,19 @@ TEst miCHELSON: `techelson`
 
 A test execution engine for Michelson smart contracts.
 
+# Features
+
+Techelson is currently in beta. The rough list of (planned) features is
+
+- [x] operation must-fail: specifies that a (chain of) operation(s) should fail
+- [x] inspection instruction: break points and stack inspection
+- [x] support for all data types (potentially with some liberty taken compared to tezos)
+- [ ] semantics as close to the tezos protocol as possible
+    - [x] for non-crypto operations (`int`, `nat`, `map`, *etc.*)
+    - [ ] for crypto operations
+- [x] support import of local michelson contracts
+- [ ] support retrieving the storage and code of contracts directly from the tezos blockchain
+
 # Build
 
 We recommend to use the latest version of the OCaml compiler. For example
@@ -20,6 +33,8 @@ We recommend to use the latest version of the OCaml compiler. For example
 
 (This list of dependencies might be out-of-date. Check `.travis.sh` for the latest version.) Finally, build `techelson` with `make`. The binary will be `./bin/techelson`.
 
+You can also run `make test` to make sure there is no problem with the techelson binary. The user documentation's root is `docs/user_doc/index.html`. You can regenerate it with `make user-doc`, as long as you have [mdbook] installed.
+
 # Usage
 
 Assuming the binary `techelson` is in you path, you can run it with
@@ -35,7 +50,16 @@ A `<testcase>` is a (sequence of) michelson instruction(s) which produce(s) a li
 For example
 
 ```bash
-> techelson --contract rsc/test1/test1.liq.tz -- rsc/test1/test1.liq.tz.tst
+> techelson --contract rsc/tests/test0/contracts/test0.liq.tz -- rsc/tests/test0/okay/Test0Test1.techel
 ```
 
-[dune]:https://github.com/ocaml/dune (Dune project manager's Github page)
+# Documentation
+
+The user documentation is hosted here: [liquidity-lang.org/techelson/doc]. You can also access the bleeding edge version on [the main repo's git page]. Finally, there is a blog post by techelson's main developer on how to use techelson with [Liquidity]: [adrienchampion.github.io/blog].
+
+[dune]: https://github.com/ocaml/dune (Dune project manager's Github page)
+[mdbook]: https://github.com/rust-lang-nursery/mdBook (Mdbook's github repository)
+[liquidity-lang.org/techelson/doc]: http://www.liquidity-lang.org/techelson/doc (Techelson's user documentation)
+[Liquidity]: http://www.liquidity-lang.org/ (Liquidity's official page)
+[adrienchampion.github.io/blog]: https://adrienchampion.github.io/blog/tezos/techelson/with_liquidity/index.html (Using techelson with Liquidity)
+[the main repo's git page]: https://ocamlpro.github.io/techelson/user_doc (Techelson's user documentation)
