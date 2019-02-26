@@ -11,7 +11,8 @@
         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
       }
 
-      .container { margin: 50px auto 40px auto; width: 600px; text-align: center; }
+      .container { margin: 50px auto 40px auto; width: 600px; }
+      .centered { text-align: center; }
 
       a { color: #4183c4; text-decoration: none; }
       a:hover { text-decoration: underline; }
@@ -33,14 +34,8 @@
         .logo-img-2x { display: inline-block; }
       }
 
-      #suggestions {
-        margin-top: 35px;
-        color: #ccc;
-      }
-      #suggestions a {
-        color: #666666;
-        font-weight: 200;
-        font-size: 14px;
+      #suggestions { margin-top: 35px; color: #ccc; }
+      #suggestions a { color: #666666; font-weight: 200; font-size: 14px;
         margin: 0 10px;
       }
 
@@ -49,8 +44,7 @@
   </head>
   <body>
 
-    <div class="container">
-
+    <div class="container centered">
       <h1>Techelson</h1>
       <p><strong>Techelson</strong> is a <strong>Testing
       Framework</strong> for Michelson, the smart contract language
@@ -59,6 +53,7 @@
       language.</p>
     </div>
 
+    <div class="container">
       <ul>
         <li> Source
         repository: <a href="https://github.com/OCamlPro/techelson">Techelson
@@ -66,10 +61,13 @@
         <li> Documentation: <a href="user_doc/">Techelson Documentation</a>
         <li> Liquidity: <a href="https://www.liquidity-lang.org/">Liquidity Language</a>
       </ul>
+    </div>
+    
+    <div class="container centered">
       <div id="suggestions">
         <a href="https://github.com/OCamlPro/techelson">Techelson Repo</a> —
         <a href="https://github.com/OCamlPro/liquidity">Liquidity Repo</a>
       </div>
-  
+    </div>
 
 </body></html>
